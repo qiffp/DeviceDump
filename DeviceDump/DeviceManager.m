@@ -9,6 +9,11 @@
 #import "DeviceManager.h"
 #import "NSDictionary+ArrayKeys.h"
 
+typedef NS_ENUM(NSUInteger, systemProfilerAttribute) {
+	systemProfilerVendorId,
+	systemProfilerProductId
+};
+
 @implementation DeviceManager {
 	NSMutableArray *_devices;
 }
@@ -27,11 +32,28 @@
 	return [self.devices count] > 0;
 }
 
+- (NSString *)descriptionOfAllDevices
+{
+	NSMutableString *description = [NSMutableString string];
+	if (_jsonFormatted) {
+		description = [[self deviceInfoJSONString] mutableCopy];
+	} else {
+		NSUInteger deviceCount = [_devices count];
+		fprintf(stdout, "%lu device%s connected:\n\n", deviceCount, deviceCount > 1 ? "s" : "");
+		for (AMDevice *device in _devices) {
+			[description appendString:[self descriptionOfDevice:device]];
+		}
+	}
+
+	return description;
+}
+
 - (NSString *)descriptionOfDevice:(AMDevice *)device
 {
 	NSString *deviceType = [device deviceValueForKey:@"ProductType"];
+	NSString *vmwareAttributes = _useVmwareAttributes ? [NSString stringWithFormat:@"USB Product ID: %@\nUSB Vendor ID: %@\n", [self systemProfilerAttribute:systemProfilerProductId forDevice:device], [self systemProfilerAttribute:systemProfilerVendorId forDevice:device]] : @"";
 	
-	return [NSString stringWithFormat:@"Device name: %@\nModel: %@\nOS version: %@\nType: %@\nModel number: %@\nSerial number: %@\nUDID: %@\n", device.deviceName, [self deviceModelForType:deviceType], [device deviceValueForKey:@"ProductVersion"], deviceType, [device deviceValueForKey:@"ModelNumber"], device.serialNumber, device.udid];
+	return [NSString stringWithFormat:@"Device name: %@\nModel: %@\nOS version: %@\nType: %@\nModel number: %@\nSerial number: %@\nUDID: %@\n%@\n", device.deviceName, [self deviceModelForType:deviceType], [device deviceValueForKey:@"ProductVersion"], deviceType, [device deviceValueForKey:@"ModelNumber"], device.serialNumber, device.udid, vmwareAttributes];
 }
 
 - (NSString *)descriptionOfDeviceAtIndex:(NSUInteger)index
@@ -65,17 +87,66 @@
 	}
 }
 
+- (NSString *)systemProfilerAttribute:(systemProfilerAttribute)attribute forDevice:(AMDevice *)device
+{
+//	'print $3' only includes the product id, vender id, serial number and a bunch of empty lines - happy coincidence
+	NSString *argument = [NSString stringWithFormat:@"system_profiler SPUSBDataType | sed -n -e '/%@/,/Serial/p' | awk '{ print $3 }'", device.deviceClass];
+
+	NSPipe *pipe = [NSPipe pipe];
+	NSTask *task = [[NSTask alloc] init];
+	[task setLaunchPath:@"/bin/sh"];
+	[task setArguments:@[@"-c", argument]];
+	[task setStandardOutput:pipe];
+	[task launch];
+	[task waitUntilExit];
+
+	NSString *output = [[NSString alloc] initWithData:[[pipe fileHandleForReading] readDataToEndOfFile] encoding:NSUTF8StringEncoding];
+	NSMutableArray *outputArray = [[output componentsSeparatedByString:@"\n"] mutableCopy];
+	[outputArray removeObject:@""];
+	NSArray *reverseOutputArray = [[outputArray reverseObjectEnumerator] allObjects];
+
+//	At this point, reverseOutputArray is in the format:
+//	[serial number, vendor id, product id, ...repeat per device]
+
+//	Match device on serial number...this is kind of gross
+	NSString *result;
+	for (NSUInteger i = 0; i < [reverseOutputArray count]; i = i + 3) {
+		if ([reverseOutputArray[i] isEqualToString:device.udid]) {
+			switch (attribute) {
+				case systemProfilerVendorId:
+					result = reverseOutputArray[i + 1];
+					break;
+				case systemProfilerProductId:
+					result = reverseOutputArray[i + 2];
+					break;
+				default:
+					result = @"Not found";
+					break;
+			}
+		}
+	}
+
+	return result;
+}
+
 - (NSDictionary *)dictionaryForDevice:(AMDevice *)device
 {
 	NSString *deviceType = [device deviceValueForKey:@"ProductType"];
+
+	NSMutableDictionary *deviceAttributes = [NSMutableDictionary dictionaryWithDictionary:@{@"name": device.deviceName,
+																							@"model": [self deviceModelForType:deviceType],
+																							@"os_version": [device deviceValueForKey:@"ProductVersion"],
+																							@"type": deviceType,
+																							@"model_number": [device deviceValueForKey:@"ModelNumber"],
+																							@"serial_number": device.serialNumber,
+																							@"udid": device.udid}];
+
+	if (_useVmwareAttributes) {
+		[deviceAttributes addEntriesFromDictionary:@{@"usb_product_id": [self systemProfilerAttribute:systemProfilerProductId forDevice:device],
+													 @"usb_vendor_id": [self systemProfilerAttribute:systemProfilerVendorId forDevice:device]}];
+	}
 	
-	return @{@"name": device.deviceName,
-			 @"model": [self deviceModelForType:deviceType],
-			 @"os_version": [device deviceValueForKey:@"ProductVersion"],
-			 @"type": deviceType,
-			 @"model_number": [device deviceValueForKey:@"ModelNumber"],
-			 @"serial_number": device.serialNumber,
-			 @"udid": device.udid};
+	return deviceAttributes;
 }
 
 - (NSDictionary *)dictionaryForDevices

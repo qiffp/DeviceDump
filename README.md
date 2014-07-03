@@ -47,6 +47,20 @@ Format output as JSON with `--json` option:
 }
 ```
 
+Also include the USB Product ID and Vendor ID (from system_profiler) for use with VMware with `--vmware` option:
+
+```
+{
+  "devices" : [
+    {
+      ...
+      "usb_product_id": "0x12ab",
+      "usb_vendor_id": "0x05ac"
+    }
+  ]
+}
+```
+
 ==
 
 Built using a modified version of [MobileDeviceAccess](https://bitbucket.org/tristero/mobiledeviceaccess) by [Jeff Laing (tristero)](https://bitbucket.org/tristero).
